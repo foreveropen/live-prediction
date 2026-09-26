@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>直播预言竞猜</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">🔮 直播预言</div>
+  <div class="right">
+    <span class="chips-badge" id="chipsBadge" style="display:none">💰 <span id="chipsVal">0</span></span>
+    <button class="btn btn-sm" id="historyBtn" style="display:none">我的预言</button>
+    <button class="btn btn-sm" id="adminBtn" style="display:none">管理后台</button>
+    <button class="btn btn-sm" id="loginBtn">登录</button>
+    <button class="btn btn-sm" id="logoutBtn" style="display:none">退出</button>
+  </div>
+</div>
+
+<div class="container">
+  <div class="pred-list" id="predList"></div>
+</div>
+
+<!-- 登录注册弹窗 -->
+<div class="modal-mask" id="loginModal">
+  <div class="modal">
+    <h3 id="loginTitle">登录</h3>
+    <div class="form-group">
+      <label>用户名</label>
+      <input type="text" id="loginUser" placeholder="输入用户名">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input type="password" id="loginPass" placeholder="输入密码">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="switchMode">注册新账号</button>
+      <button class="btn btn-primary" id="doLogin">登录</button>
+    </div>
+  </div>
+</div>
+
+<!-- 投注弹窗 -->
+<div class="modal-mask" id="betModal">
+  <div class="modal">
+    <h3 id="betTitle">参与预测</h3>
+    <p style="color:var(--text-dim);font-size:13px;margin-bottom:12px" id="betDesc"></p>
+    <div class="form-group">
+      <label>投入筹码</label>
+      <input type="number" id="betAmount" placeholder="输入筹码数" min="1">
+      <div class="quick-amounts">
+        <button class="btn btn-sm" data-amt="10">10</button>
+        <button class="btn btn-sm" data-amt="50">50</button>
+        <button class="btn btn-sm" data-amt="100">100</button>
+        <button class="btn btn-sm" data-amt="all">全部</button>
+      </div>
+    </div>
+    <div id="betPreview" style="font-size:13px;color:var(--gold);margin:8px 0"></div>
+    <div class="modal-actions">
+      <button class="btn" id="betCancel">取消</button>
+      <button class="btn btn-primary" id="betConfirm">确认投入</button>
+    </div>
+  </div>
+</div>
+
+<!-- 历史记录弹窗 -->
+<div class="modal-mask" id="historyModal">
+  <div class="modal" style="max-width:520px">
+    <h3>我的预言记录</h3>
+    <div id="historyList"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="document.getElementById('historyModal').classList.remove('show')">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+let predictions = [];
+let currentBet = null; // {pred, side}
+let loginMode = 'login';
+
+async function refreshMe() {
+  if (!API.token) return;
+  const r = await API.me();
+  if (r.code === 200) {
+    API.user = r.data;
+    document.getElementById('chipsBadge').style.display = '';
+    document.getElementById('chipsVal').textContent = fmt(r.data.chips);
+    document.getElementById('historyBtn').style.display = '';
+    document.getElementById('logoutBtn').style.display = '';
+    document.getElementById('loginBtn').style.display = 'none';
+    if (r.data.isAdmin) document.getElementById('adminBtn').style.display = '';
+  }
+}
+
+async function loadList() {
+  const r = await API.listPredictions();
+  predictions = r.data || [];
+  render();
+}
+
+function render() {
+  const list = document.getElementById('predList');
+  list.innerHTML = '';
+  const now = Date.now();
+  for (const p of predictions) {
+    const card = document.createElement('div');
+    card.className = 'pred-card' + (p.isTop ? ' top' : '') + (p.status === 'voided' ? ' voided' : '');
+
+    const pctA = p.totalPool > 0 ? (p.poolA / p.totalPool * 100) : 50;
+    const pctB = 100 - pctA;
+
+    let statusText, statusCls;
+    if (p.status === 'active') {
+      const remain = p.sealAt - now;
+      if (remain <= 0) { statusText = '已封盘'; statusCls = 'status-sealed'; }
+      else {
+        const m = Math.floor(remain / 60000);
+        const s = Math.floor((remain % 60000) / 1000);
+        statusText = `投注中 ${m}分${s}秒`; statusCls = 'status-active';
+      }
+    } else if (p.status === 'sealed') { statusText = '已封盘'; statusCls = 'status-sealed'; }
+    else if (p.status === 'settled') { statusText = '已结算'; statusCls = 'status-settled'; }
+    else if (p.status === 'voided') { statusText = '已作废'; statusCls = 'status-voided'; }
+    else { statusText = '草稿'; statusCls = 'status-voided'; }
+
+    let settledHtml = '';
+    if (p.status === 'settled') {
+      settledHtml = `<div style="margin-top:10px;font-size:13px">
+        正确答案：<b style="color:var(--win)">${p.settledSide === 'A' ? p.optionA : p.optionB}</b>
+        ${p.myBet ? (p.myBet.side === p.settledSide
+          ? `<span class="tag-win">  猜对 +${p.myBet.amount + p.myBet.profit}</span>`
+          : `<span class="tag-lose">  猜错 -${p.myBet.amount}</span>`) : ''}
+      </div>`;
+    }
+    if (p.status === 'voided') {
+      settledHtml = `<div style="margin-top:10px;font-size:13px;color:var(--text-dim)">预言已作废，筹码已退回</div>`;
+    }
+
+    let betHtml = '';
+    if (p.status === 'active' && (!p.sealAt || p.sealAt > now)) {
+      if (p.myBet) {
+        betHtml = `<div style="margin-top:10px;font-size:13px;color:var(--text-dim)">你已选择：<b>${p.myBet.side === 'A' ? p.optionA : p.optionB}</b>，投入 ${fmt(p.myBet.amount)} 筹码</div>`;
+      } else if (!API.user) {
+        betHtml = `<div style="margin-top:10px"><button class="btn" onclick="showLogin()">登录后参与预测</button></div>`;
+      } else {
+        betHtml = `<div class="bet-row">
+          <button class="bet-btn" onclick="openBet(${p.id},'A')">${p.optionA}
+            <span class="odds">约 ${p.poolB > 0 ? (1 + p.poolB / Math.max(p.poolA,1)).toFixed(2) : '—'} 倍</span>
+          </button>
+          <button class="bet-btn" onclick="openBet(${p.id},'B')">${p.optionB}
+            <span class="odds">约 ${p.poolA > 0 ? (1 + p.poolA / Math.max(p.poolB,1)).toFixed(2) : '—'} 倍</span>
+          </button>
+        </div>`;
+      }
+    }
+
+    card.innerHTML = `
+      <div class="pred-head">
+        <div class="pred-title">${p.title}</div>
+        <span class="pred-status ${statusCls}">${statusText}</span>
+      </div>
+      <div class="pool-labels">
+        <span>${p.optionA} · ${fmt(p.poolA)}</span>
+        <span>${fmt(p.poolB)} · ${p.optionB}</span>
+      </div>
+      <div class="pool-bar">
+        <div class="pool-a" style="width:${p.totalPool > 0 ? pctA : 50}%">${p.totalPool > 0 ? pctA.toFixed(1) + '%' : '待投注'}</div>
+        <div class="pool-b" style="width:${p.totalPool > 0 ? pctB : 50}%">${p.totalPool > 0 ? pctB.toFixed(1) + '%' : ''}</div>
+      </div>
+      ${betHtml}
+      ${settledHtml}
+    `;
+    list.appendChild(card);
+  }
+}
+
+function showLogin() { document.getElementById('loginModal').classList.add('show'); }
+
+function openBet(predId, side) {
+  if (!API.user) { showLogin(); return; }
+  const p = predictions.find(x => x.id === predId);
+  currentBet = { pred: p, side };
+  document.getElementById('betTitle').textContent = p.title;
+  document.getElementById('betDesc').textContent = `你选择：${side === 'A' ? p.optionA : p.optionB}（单笔 ${p.minBet} ~ ${p.maxBet} 筹码）`;
+  document.getElementById('betAmount').value = '';
+  document.getElementById('betPreview').textContent = '';
+  document.getElementById('betModal').classList.add('show');
+}
+
+document.querySelectorAll('.quick-amounts .btn').forEach(btn => {
+  btn.onclick = () => {
+    const amt = btn.dataset.amt;
+    if (amt === 'all') document.getElementById('betAmount').value = API.user.chips;
+    else document.getElementById('betAmount').value = amt;
+    updatePreview();
+  };
+});
+
+function updatePreview() {
+  if (!currentBet) return;
+  const amt = Number(document.getElementById('betAmount').value);
+  if (!amt || amt <= 0) { document.getElementById('betPreview').textContent = ''; return; }
+  const p = currentBet.pred;
+  const side = currentBet.side;
+  const other = side === 'A' ? 'B' : 'A';
+  const winPool = side === 'A' ? p.poolA : p.poolB;
+  const losePool = side === 'A' ? p.poolB : p.poolA;
+  const newWinPool = winPool + amt;
+  const newLosePool = losePool;
+  let profit;
+  if (newLosePool <= 0) profit = 0;
+  else profit = Math.floor(newLosePool * amt / newWinPool);
+  document.getElementById('betPreview').textContent = `若命中，预估到手 ${fmt(amt + profit)}（本金 ${fmt(amt)} + 盈利 ${fmt(profit)}）`;
+}
+document.getElementById('betAmount').oninput = updatePreview;
+
+document.getElementById('betCancel').onclick = () => document.getElementById('betModal').classList.remove('show');
+document.getElementById('betConfirm').onclick = async () => {
+  const amt = Number(document.getElementById('betAmount').value);
+  if (!amt || amt <= 0) return toast('请输入有效筹码数');
+  const r = await API.bet(currentBet.pred.id, currentBet.side, amt);
+  if (r.code === 200) {
+    toast('投入成功');
+    document.getElementById('betModal').classList.remove('show');
+    await refreshMe();
+    loadList();
+  } else toast(r.message);
+};
+
+document.getElementById('loginBtn').onclick = showLogin;
+document.getElementById('switchMode').onclick = () => {
+  loginMode = loginMode === 'login' ? 'register' : 'login';
+  document.getElementById('loginTitle').textContent = loginMode === 'login' ? '登录' : '注册';
+  document.getElementById('doLogin').textContent = loginMode === 'login' ? '登录' : '注册';
+  document.getElementById('switchMode').textContent = loginMode === 'login' ? '注册新账号' : '已有账号，去登录';
+};
+document.getElementById('doLogin').onclick = async () => {
+  const u = document.getElementById('loginUser').value.trim();
+  const p = document.getElementById('loginPass').value;
+  if (!u || !p) return toast('请输入用户名和密码');
+  const r = loginMode === 'login' ? await API.login(u, p) : await API.register(u, p);
+  if (r.code === 200) {
+    API.token = r.data.token;
+    API.user = r.data.user;
+    localStorage.setItem('token', r.data.token);
+    toast(loginMode === 'login' ? '登录成功' : '注册成功，赠送1000筹码');
+    document.getElementById('loginModal').classList.remove('show');
+    refreshMe(); loadList();
+  } else toast(r.message);
+};
+document.getElementById('logoutBtn').onclick = () => { API.logout(); location.reload(); };
+document.getElementById('adminBtn').onclick = () => location.href = '/admin.html';
+document.getElementById('historyBtn').onclick = async () => {
+  const r = await API.history();
+  const box = document.getElementById('historyList');
+  box.innerHTML = '';
+  if (!r.data || r.data.length === 0) { box.innerHTML = '<p style="color:var(--text-dim)">暂无记录</p>'; }
+  for (const h of r.data) {
+    const item = document.createElement('div');
+    item.className = 'history-item';
+    let tag;
+    if (h.result === 'win') tag = `<span class="tag-win">猜对 +${h.amount + h.profit}</span>`;
+    else if (h.result === 'lose') tag = `<span class="tag-lose">猜错 -${h.amount}</span>`;
+    else if (h.result === 'voided') tag = `<span class="tag-void">已作废 退${h.amount}</span>`;
+    else tag = `<span class="tag-pending">进行中</span>`;
+    item.innerHTML = `<div><div class="h-title">${h.title}</div>
+      <div class="h-meta">你选：${h.side === 'A' ? h.optionA : h.optionB} · ${h.amount}筹码</div></div>${tag}`;
+    box.appendChild(item);
+  }
+  document.getElementById('historyModal').classList.add('show');
+};
+
+// 倒计时每秒刷新
+setInterval(() => { const el = document.querySelectorAll('.pred-status'); render(); }, 1000);
+
+// SSE 实时更新
+connectSSE(() => loadList());
+
+// 初始化
+(async () => { await refreshMe(); await loadList(); })();
+</script>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>预言管理后台</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">🔮 管理后台</div>
+  <div class="right">
+    <span class="chips-badge" id="chipsVal"></span>
+    <button class="btn btn-sm" onclick="location.href='/'">返回观众端</button>
+    <button class="btn btn-sm" onclick="localStorage.removeItem('token');location.href='/'">退出</button>
+  </div>
+</div>
+
+<div class="container">
+
+  <div class="pred-card" style="margin-bottom:20px">
+    <h3 style="margin-bottom:14px">创建新预言</h3>
+    <div class="form-group">
+      <label>预言标题</label>
+      <input type="text" id="fTitle" placeholder="例如：今晚主播能不能上分？">
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div class="form-group">
+        <label>选项 A</label>
+        <input type="text" id="fOptA" placeholder="例如：能">
+      </div>
+      <div class="form-group">
+        <label>选项 B</label>
+        <input type="text" id="fOptB" placeholder="例如：不能">
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+      <div class="form-group">
+        <label>封盘时间（分钟）</label>
+        <input type="number" id="fMinutes" value="10">
+      </div>
+      <div class="form-group">
+        <label>最小投注</label>
+        <input type="number" id="fMin" value="10">
+      </div>
+      <div class="form-group">
+        <label>最大投注</label>
+        <input type="number" id="fMax" value="10000">
+      </div>
+    </div>
+    <button class="btn btn-primary" onclick="createPred()">发布预言</button>
+  </div>
+
+  <h3 style="margin-bottom:12px">预言列表</h3>
+  <div id="adminList"></div>
+
+</div>
+
+<script src="/js/api.js"></script>
+<script>
+async function checkAdmin() {
+  if (!API.token) { location.href = '/'; return; }
+  const r = await API.me();
+  if (r.code !== 200 || !r.data.isAdmin) { alert('需要管理员权限'); location.href = '/'; return; }
+  document.getElementById('chipsVal').textContent = '💰 ' + fmt(r.data.chips);
+}
+
+async function loadList() {
+  const r = await API.listPredictions();
+  const box = document.getElementById('adminList');
+  box.innerHTML = '';
+  for (const p of (r.data || [])) {
+    const card = document.createElement('div');
+    card.className = 'pred-card';
+    let actions = '';
+    if (p.status === 'active') {
+      actions = `
+        <button class="btn btn-sm" onclick="doSeal(${p.id})">提前封盘</button>
+        <button class="btn btn-sm" onclick="doSettle(${p.id},'A')" style="border-color:var(--accent);color:var(--accent)">结算A</button>
+        <button class="btn btn-sm" onclick="doSettle(${p.id},'B')" style="border-color:var(--accent-2);color:var(--accent-2)">结算B</button>
+      `;
+    } else if (p.status === 'sealed') {
+      actions = `
+        <button class="btn btn-sm" onclick="doSettle(${p.id},'A')" style="border-color:var(--accent);color:var(--accent)">结算A</button>
+        <button class="btn btn-sm" onclick="doSettle(${p.id},'B')" style="border-color:var(--accent-2);color:var(--accent-2)">结算B</button>
+      `;
+    }
+    if (p.status !== 'settled' && p.status !== 'voided') {
+      actions += `<button class="btn btn-sm" onclick="doVoid(${p.id})" style="border-color:var(--lose);color:var(--lose)">作废</button>`;
+    }
+    actions += `<button class="btn btn-sm" onclick="doTop(${p.id})">${p.isTop ? '取消置顶' : '置顶'}</button>`;
+
+    card.innerHTML = `
+      <div class="pred-head">
+        <div class="pred-title">${p.title} ${p.isTop ? '📌' : ''}</div>
+        <span class="pred-status status-${p.status}">${p.status}</span>
+      </div>
+      <div style="font-size:13px;color:var(--text-dim);margin-bottom:10px">
+        A: ${p.optionA} (${fmt(p.poolA)}) · B: ${p.optionB} (${fmt(p.poolB)}) · 总彩池 ${fmt(p.totalPool)}
+      </div>
+      <div class="admin-actions">${actions}</div>
+    `;
+    box.appendChild(card);
+  }
+}
+
+async function createPred() {
+  const data = {
+    title: document.getElementById('fTitle').value.trim(),
+    optionA: document.getElementById('fOptA').value.trim(),
+    optionB: document.getElementById('fOptB').value.trim(),
+    minutes: Number(document.getElementById('fMinutes').value) || 10,
+    minBet: Number(document.getElementById('fMin').value) || 10,
+    maxBet: Number(document.getElementById('fMax').value) || 10000
+  };
+  const r = await API.createPrediction(data);
+  if (r.code === 200) { toast('已发布'); loadList(); }
+  else toast(r.message);
+}
+async function doSeal(id) { if (!confirm('确认提前封盘？')) return; await API.seal(id); loadList(); }
+async function doSettle(id, side) { if (!confirm(`确认结算：${side} 为正确答案？`)) return; const r = await API.settle(id, side); if (r.code===200) toast('结算完成'); else toast(r.message); loadList(); }
+async function doVoid(id) { if (!confirm('作废将全额退回所有人筹码，确认？')) return; await API.voidPrediction(id); loadList(); }
+async function doTop(id) { await API.toggleTop(id); loadList(); }
+
+connectSSE(() => loadList());
+(async () => { await checkAdmin(); await loadList(); })();
+</script>
+</body>
+</html>
